@@ -8,7 +8,11 @@ package Authen::Perl::NTLM;
 
 use strict;
 use Carp;
-$Authen::Perl::NTLM::PurePerl = undef;
+$Authen::Perl::NTLM::cChallenge = 0; # a counter to stir the seed that
+                                     # generates the random number for the
+                                     # nonce
+$Authen::Perl::NTLM::PurePerl = undef; # a flag to see if we load pure perl 
+                                       # DES and MD4 modules
 eval "require Crypt::DES && require Digest::MD4";
 if ($@) {
     eval "require Crypt::DES_PP && require Digest::Perl::MD4";
@@ -44,8 +48,8 @@ require DynaLoader;
 
 @ISA = qw (Exporter DynaLoader);
 @EXPORT = qw ();
-@EXPORT_OK = qw (nt_resp lm_resp negotiate_msg auth_msg);
-$VERSION = '0.02';
+@EXPORT_OK = qw (nt_resp lm_resp negotiate_msg auth_msg compute_nonce);
+$VERSION = '0.03';
 
 # Stolen from Crypt::DES.
 sub usage {
@@ -114,6 +118,7 @@ sub lm_resp($$);
 sub nt_resp($$);
 sub negotiate_msg($$$);
 sub auth_msg($$$$$$$);
+sub compute_nonce();
 sub calc_resp($$);
 
 #########################################################################
@@ -211,6 +216,27 @@ sub auth_msg($$$$$$$)
     return $msg;
 }
 
+#######################################################################
+# compute_nonce computes the 8-bytes nonce to be included in server's
+# NTLM challenge packet.
+#######################################################################
+sub compute_nonce()
+{
+   my @SysTime = UNIXTimeToFILETIME(gmtime());
+   my $Seed = (($SysTime[1] + 1) <<  0) |
+              (($SysTime[2] + 0) <<  8) |
+              (($SysTime[3] - 1) << 16) |
+              (($SysTime[4] + 0) << 24);
+   srand $Seed;
+   $Authen::Perl::NTLM::cChallenge += 0x100;
+   my $ulChallenge0 = (2**32)*rand; 
+   my $ulChallenge1 = (2**32)*rand; 
+   my $ulNegate = (2**32)*rand;
+   if ($ulNegate & 0x1) {$ulChallenge0 |= 0x80000000;} 
+   if ($ulNegate & 0x2) {$ulChallenge1 |= 0x80000000;} 
+   return pack("V", $ulChallenge0) . pack("V", $ulChallenge1);
+}
+
 #########################################################################
 # convert_key converts a 7-bytes key to an 8-bytes key based on an 
 # algorithm.
@@ -302,6 +328,29 @@ sub unicodify($)
    return $newstr;
 }
 
+##########################################################################
+# UNIXTimeToFILETIME converts UNIX time_t to 64-bit FILETIME format used
+# in win32 platforms. It returns two 32-bit integer. The first one is 
+# the upper 32-bit and the second one is the lower 32-bit. The result is
+# adjusted by cChallenge as in NTLM spec. For those of you who want to
+# use this function for actual use, please remove the cChallenge variable.
+########################################################################## 
+sub UNIXTimeToFILETIME
+{
+    my ($time) = @_;
+    $time = $time * 10000000 + 11644473600000000 + $Authen::Perl::NTLM::cChallenge;
+    my $uppertime = $time >> 32;
+    my $lowertime = $time & 0xffffffff;
+    return ($lowertime & 0x000000ff, 
+	    $lowertime & 0x0000ff00,
+	    $lowertime & 0x00ff0000,
+	    $lowertime & 0xff000000,
+	    $uppertime & 0x000000ff,
+	    $uppertime & 0x0000ff00,
+	    $uppertime & 0x00ff0000,
+	    $uppertime & 0xff000000);
+}
+
 1;
 
 __END__
@@ -314,6 +363,7 @@ Authen::NTLM - Perl extension for NTLM related computations
 
 use Authen::NTLM qw(nt_resp lm_resp negotiate_msg auth_msg);
 
+# To compose a NTLM Negotiate Packet
     $flags = Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_80000000 
 	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_128
 	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_ALWAYS_SIGN
@@ -324,15 +374,22 @@ use Authen::NTLM qw(nt_resp lm_resp negotiate_msg auth_msg);
 	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_OEM
 	   | Authen::Perl::NTLM::NTLMSSP_REQUEST_TARGET;
     $negotiate_msg = negotiate_msg("my_domain", "my_ws", $flags);
+
+# To compute the LM Response and NT Response based on password
     $my_pass = "mypassword";
     $lm_resp = lm_resp($my_pass, $nonce);
     $nt_resp = nt_resp($my_pass, $nonce);
+
+# To compose a NTLM Response Packet
     $flags = Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_ALWAYS_SIGN
 	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_NTLM
 	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_UNICODE
 	   | Authen::Perl::NTLM::NTLMSSP_REQUEST_TARGET;
     $auth_msg = auth_msg($lm_resp, $nt_resp, "my_userdomain", "my_username"
 		"my_ws", "", $flags);
+
+# To compute a nonce at the server side to create NTLM Challenge Packet
+    $nonce = compute_nonce();
 
 =head1 DESCRIPTION
 
@@ -371,24 +428,23 @@ supposedly faster.
 
 =head1 TO-DO
 
-1) A function to compute nonce at the server side.
+1) A function to compose NTLM challenge packet for DCE RPC.
 
-2) A function to compose NTLM challenge packet for DCE RPC.
+2) A function to parse NTLM negotiation packet for DCE RPC. 
 
-3) A function to parse NTLM negotiation packet for DCE RPC. 
+3) A function to parse NTLM challenge packet for DCE RPC. 
 
-4) A function to parse NTLM challenge packet for DCE RPC. 
+4) A function to parse NTLM response packet for DCE RPC. 
 
-5) A function to parse NTLM responsei packet for DCE RPC. 
+5) A function to compute session key for DCE RPC.
 
-6) A function to compute session key for DCE RPC.
-
-7) Implement the module in C.
+6) Implement the module in C.
 
 =head1 BUGS
 
-Nothing known. 0.01 has a bug that it won't load the pure perl
-DES and MD4 modules. This bug has been fixed in 0.02.
+Nothing known. The Makefile.PL in 0.02 has a "bug" that it 
+can't pass CPAN's auto test program. It has been fixed. It
+will work as expected for normal use though.
 
 =head1 AUTHOR
 

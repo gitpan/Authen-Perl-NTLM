@@ -1,9 +1,9 @@
 #!/usr/bin/perl
 
-use Authen::Perl::NTLM qw(nt_resp lm_resp negotiate_msg auth_msg);
+use Authen::Perl::NTLM qw(nt_resp lm_resp negotiate_msg auth_msg compute_nonce);
 use Test;
 
-plan tests => 4;
+plan tests => 5;
 $my_pass = "Beeblebrox";
 $nonce = "SrvNonce";
 $correct_negotiate_msg = pack("H74", "4e544c4d53535000" .
@@ -41,3 +41,5 @@ ok($nt_resp eq $correct_nt_resp);
     $auth_msg = auth_msg($lm_resp, $nt_resp, "USERDOM", "USER",
 		"WS", "", $flags);
 ok($auth_msg eq $correct_auth_msg);
+$nonce = compute_nonce();
+ok(length($nonce) == 8);
