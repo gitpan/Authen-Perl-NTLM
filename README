@@ -2,11 +2,27 @@ NAME
     Authen::NTLM - Perl extension for NTLM related computations
 
 SYNOPSIS
-    use Authen::NTLM qw(nt_resp lm_resp);
+    use Authen::NTLM qw(nt_resp lm_resp negotiate_msg auth_msg);
 
+        $flags = Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_80000000 
+               | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_128
+               | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_ALWAYS_SIGN
+               | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_OEM_DOMAIN_SUPPLIED
+               | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_OEM_WORKSTATION_SUPPLIED
+               | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_NTLM
+               | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_UNICODE
+               | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_OEM
+               | Authen::Perl::NTLM::NTLMSSP_REQUEST_TARGET;
+        $negotiate_msg = negotiate_msg("my_domain", "my_ws", $flags);
         $my_pass = "mypassword";
-        $nt_resp = nt_resp($my_pass, $nonce);
         $lm_resp = lm_resp($my_pass, $nonce);
+        $nt_resp = nt_resp($my_pass, $nonce);
+        $flags = Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_ALWAYS_SIGN
+               | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_NTLM
+               | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_UNICODE
+               | Authen::Perl::NTLM::NTLMSSP_REQUEST_TARGET;
+        $auth_msg = auth_msg($lm_resp, $nt_resp, "my_userdomain", "my_username"
+                    "my_ws", "", $flags);
 
 DESCRIPTION
     The NTLM (Windows NT LAN Manager) authentication scheme is the
@@ -43,18 +59,23 @@ DEPENDENCIES
     supposedly faster.
 
 TO-DO
-    1) A function to compose NTLM negotiation packet for DCE RPC.
+    1) A function to compute nonce at the server side.
 
-    2) A function to compute nonce at the server side.
+    2) A function to compose NTLM challenge packet for DCE RPC.
 
-    3) A function to compose NTLM chanllenge packet for DCE RPC.
+    3) A function to parse NTLM negotiation packet for DCE RPC.
 
-    4) A function to compose NTLM response packet for DCE RPC.
+    4) A function to parse NTLM challenge packet for DCE RPC.
 
-    5) Implement the module in C.
+    5) A function to parse NTLM responsei packet for DCE RPC.
+
+    6) A function to compute session key for DCE RPC.
+
+    7) Implement the module in C.
 
 BUGS
-    Nothing known.
+    Nothing known. 0.01 has a bug that it won't load the pure perl DES and
+    MD4 modules. This bug has been fixed in 0.02.
 
 AUTHOR
     This implementation was written by Yee Man Chan (ymc@yahoo.com).

@@ -16,7 +16,7 @@ if ($@) {
 	die "Required DES and/or MD4 module doesn't exist!\n";
     }
     else {
-        $Authen::Perl::NTLM::PurePerl = 0;
+        $Authen::Perl::NTLM::PurePerl = 1;
     }
 }
 else {
@@ -44,8 +44,8 @@ require DynaLoader;
 
 @ISA = qw (Exporter DynaLoader);
 @EXPORT = qw ();
-@EXPORT_OK = qw (nt_resp lm_resp);
-$VERSION = '0.01';
+@EXPORT_OK = qw (nt_resp lm_resp negotiate_msg auth_msg);
+$VERSION = '0.02';
 
 # Stolen from Crypt::DES.
 sub usage {
@@ -54,8 +54,66 @@ sub usage {
     croak "Usage: $subr (@_)";
 }
 
+# These constants are stolen from samba-2.2.4 and other sources
+use constant NTLMSSP_SIGNATURE => 'NTLMSSP';
+
+# NTLMSSP Message Types
+use constant NTLMSSP_NEGOTIATE => 1;
+use constant NTLMSSP_CHALLENGE => 2;
+use constant NTLMSSP_AUTH      => 3;
+use constant NTLMSSP_UNKNOWN   => 4; 
+
+# NTLMSSP Flags
+
+# Text strings are in unicode
+use constant NTLMSSP_NEGOTIATE_UNICODE                  => 0x00000001;
+# Text strings are in OEM 
+use constant NTLMSSP_NEGOTIATE_OEM                      => 0x00000002;
+# Server should return its authentication realm 
+use constant NTLMSSP_REQUEST_TARGET                     => 0x00000004;
+# Request signature capability 
+use constant NTLMSSP_NEGOTIATE_SIGN                     => 0x00000010; 
+# Request confidentiality
+use constant NTLMSSP_NEGOTIATE_SEAL                     => 0x00000020;
+# Use datagram style authentication
+use constant NTLMSSP_NEGOTIATE_DATAGRAM                 => 0x00000040;
+# Use LM session key for sign/seal
+use constant NTLMSSP_NEGOTIATE_LM_KEY                   => 0x00000080;
+# NetWare authentication
+use constant NTLMSSP_NEGOTIATE_NETWARE                  => 0x00000100;
+# NTLM authentication
+use constant NTLMSSP_NEGOTIATE_NTLM                     => 0x00000200;
+# Domain Name supplied on negotiate
+use constant NTLMSSP_NEGOTIATE_OEM_DOMAIN_SUPPLIED      => 0x00001000;
+# Workstation Name supplied on negotiate
+use constant NTLMSSP_NEGOTIATE_OEM_WORKSTATION_SUPPLIED => 0x00002000;
+# Indicates client/server are same machine
+use constant NTLMSSP_NEGOTIATE_LOCAL_CALL               => 0x00004000;
+# Sign for all security levels
+use constant NTLMSSP_NEGOTIATE_ALWAYS_SIGN              => 0x00008000;
+# TargetName is a domain name
+use constant NTLMSSP_TARGET_TYPE_DOMAIN                 => 0x00010000;
+# TargetName is a server name
+use constant NTLMSSP_TARGET_TYPE_SERVER                 => 0x00020000;
+# TargetName is a share name
+use constant NTLMSSP_TARGET_TYPE_SHARE                  => 0x00040000;
+# TargetName is a share name
+use constant NTLMSSP_NEGOTIATE_NTLM2                    => 0x00080000;
+# get back session keys
+use constant NTLMSSP_REQUEST_INIT_RESPONSE              => 0x00100000;
+# get back session key, LUID
+use constant NTLMSSP_REQUEST_ACCEPT_RESPONSE            => 0x00200000;
+# request non-ntsession key
+use constant NTLMSSP_REQUEST_NON_NT_SESSION_KEY         => 0x00400000;
+use constant NTLMSSP_NEGOTIATE_TARGET_INFO              => 0x00800000;
+use constant NTLMSSP_NEGOTIATE_128                      => 0x20000000;
+use constant NTLMSSP_NEGOTIATE_KEY_EXCH                 => 0x40000000;
+use constant NTLMSSP_NEGOTIATE_80000000                 => 0x80000000;
+
 sub lm_resp($$);
 sub nt_resp($$);
+sub negotiate_msg($$$);
+sub auth_msg($$$$$$$);
 sub calc_resp($$);
 
 #########################################################################
@@ -104,6 +162,53 @@ sub nt_resp($$)
 	$nt_hpw = $md4->digest() . pack("H10", "0000000000");
     }
     return calc_resp($nt_hpw, $nonce);
+}
+
+####################################################################
+# negotiate_msg creates the NTLM negotiate packet given the domain #
+# (from Win32::DomainName()) and the workstation name (from        #
+# $ENV{'COMPUTERNAME'} or Win32::NodeName()) and the negotiation   #
+# flags.							   #
+####################################################################
+sub negotiate_msg($$$)
+{
+    my ($domain, $machine) = @_;
+    my $flags = pack("V", $_[2]);
+    my $msg = NTLMSSP_SIGNATURE . chr(0);
+    $msg .= pack("V", NTLMSSP_NEGOTIATE);
+    $msg .= $flags;
+    my $offset = length($msg) + 8*2;
+    $msg .= pack("v", length($domain)) . pack("v", length($domain)) . pack("V", $offset + length($machine)); 
+    $msg .= pack("v", length($machine)) . pack("v", length($machine)) . pack("V", $offset);
+    $msg .= $machine . $domain;
+    return $msg;
+}
+
+###########################################################################
+# auth_msg creates the NTLM response to an NTLM challenge from the        #
+# server. It takes 7 arguments: lm_resp (from a call to lm_resp),         #
+# nt_resp (from a call to nt_resp), user domain (from $ENV{'USERDOMAIN'}),#
+# user name (from $ENV{'USERNAME'} or getlogin() or Win32::LoginName()),  #
+# workstation name (from Win32::NodeName() or $ENV{'COMPUTERNAME'}),      #
+# session key and negotiation flags.                                      #
+# This function ASSUMEs the input of user domain, user name and           # 
+# workstation name are in ASCII format and not in UNICODE format.         #
+###########################################################################
+sub auth_msg($$$$$$$)
+{
+    my ($lm_resp, $nt_resp, $domain, $username, $machine, $session_key) = @_;
+    my $flags = pack("V", $_[6]);
+    my $msg = NTLMSSP_SIGNATURE . chr(0);
+    $msg .= pack("V", NTLMSSP_AUTH);
+    my $offset = length($msg) + 8*6 + 4;
+    $msg .= pack("v", length($lm_resp)) . pack("v", length($lm_resp)) . pack("V", $offset + 2*length($domain) + 2*length($username) + 2*length($machine) + length($session_key)); 
+    $msg .= pack("v", length($nt_resp)) . pack("v", length($nt_resp)) . pack("V", $offset + 2*length($domain) + 2*length($username) + 2*length($machine) + length($session_key) + length($lm_resp)); 
+    $msg .= pack("v", 2*length($domain)) . pack("v", 2*length($domain)) . pack("V", $offset); 
+    $msg .= pack("v", 2*length($username)) . pack("v", 2*length($username)) . pack("V", $offset + 2*length($domain)); 
+    $msg .= pack("v", 2*length($machine)) . pack("v", 2*length($machine)) . pack("V", $offset + 2*length($domain) + 2*length($username)); 
+    $msg .= pack("v", length($session_key)) . pack("v", length($session_key)) . pack("V", $offset + 2*length($domain) + 2*length($username) + 2*length($machine)+ 48); 
+    $msg .= $flags . unicodify($domain) . unicodify($username) . unicodify($machine) . $lm_resp . $nt_resp . $session_key;
+    return $msg;
 }
 
 #########################################################################
@@ -207,11 +312,27 @@ Authen::NTLM - Perl extension for NTLM related computations
 
 =head1 SYNOPSIS
 
-use Authen::NTLM qw(nt_resp lm_resp);
+use Authen::NTLM qw(nt_resp lm_resp negotiate_msg auth_msg);
 
+    $flags = Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_80000000 
+	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_128
+	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_ALWAYS_SIGN
+	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_OEM_DOMAIN_SUPPLIED
+	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_OEM_WORKSTATION_SUPPLIED
+	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_NTLM
+	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_UNICODE
+	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_OEM
+	   | Authen::Perl::NTLM::NTLMSSP_REQUEST_TARGET;
+    $negotiate_msg = negotiate_msg("my_domain", "my_ws", $flags);
     $my_pass = "mypassword";
-    $nt_resp = nt_resp($my_pass, $nonce);
     $lm_resp = lm_resp($my_pass, $nonce);
+    $nt_resp = nt_resp($my_pass, $nonce);
+    $flags = Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_ALWAYS_SIGN
+	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_NTLM
+	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_UNICODE
+	   | Authen::Perl::NTLM::NTLMSSP_REQUEST_TARGET;
+    $auth_msg = auth_msg($lm_resp, $nt_resp, "my_userdomain", "my_username"
+		"my_ws", "", $flags);
 
 =head1 DESCRIPTION
 
@@ -250,19 +371,24 @@ supposedly faster.
 
 =head1 TO-DO
 
-1) A function to compose NTLM negotiation packet for DCE RPC.
+1) A function to compute nonce at the server side.
 
-2) A function to compute nonce at the server side.
+2) A function to compose NTLM challenge packet for DCE RPC.
 
-3) A function to compose NTLM chanllenge packet for DCE RPC.
+3) A function to parse NTLM negotiation packet for DCE RPC. 
 
-4) A function to compose NTLM response packet for DCE RPC.
+4) A function to parse NTLM challenge packet for DCE RPC. 
 
-5) Implement the module in C.
+5) A function to parse NTLM responsei packet for DCE RPC. 
+
+6) A function to compute session key for DCE RPC.
+
+7) Implement the module in C.
 
 =head1 BUGS
 
-Nothing known.
+Nothing known. 0.01 has a bug that it won't load the pure perl
+DES and MD4 modules. This bug has been fixed in 0.02.
 
 =head1 AUTHOR
 
