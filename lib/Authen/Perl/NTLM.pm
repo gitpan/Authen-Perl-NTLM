@@ -48,8 +48,8 @@ require DynaLoader;
 
 @ISA = qw (Exporter DynaLoader);
 @EXPORT = qw ();
-@EXPORT_OK = qw (nt_resp lm_resp negotiate_msg auth_msg compute_nonce);
-$VERSION = '0.03';
+@EXPORT_OK = qw (nt_hash lm_hash calc_resp negotiate_msg auth_msg compute_nonce);
+$VERSION = '0.04';
 
 # Stolen from Crypt::DES.
 sub usage {
@@ -114,20 +114,20 @@ use constant NTLMSSP_NEGOTIATE_128                      => 0x20000000;
 use constant NTLMSSP_NEGOTIATE_KEY_EXCH                 => 0x40000000;
 use constant NTLMSSP_NEGOTIATE_80000000                 => 0x80000000;
 
-sub lm_resp($$);
-sub nt_resp($$);
+sub lm_hash($);
+sub nt_hash($);
 sub negotiate_msg($$$);
 sub auth_msg($$$$$$$);
 sub compute_nonce();
 sub calc_resp($$);
 
-#########################################################################
-# lm_resp calculates the LM response for NTLM. It takes the nonce and 
-# the user password to compute the 24-bytes LM response.
-#########################################################################
-sub lm_resp($$)
+##########################################################################
+# lm_hash calculates the LM hash to be used to calculate the LM response #
+# It takes a password and return the 21 bytes LM password hash.          #
+##########################################################################
+sub lm_hash($)
 {
-    my ($passwd, $nonce) = @_;
+    my ($passwd) = @_;
     my $cipher1;
     my $cipher2;
     my $magic = pack("H16", "4B47532140232425"); # magical string to be encrypted for the LM password hash
@@ -145,17 +145,16 @@ sub lm_resp($$)
 	$cipher1 = Crypt::DES->new(substr($key, 0, 8));
 	$cipher2 = Crypt::DES->new(substr($key, 8, 8));
     }
-    my $lm_hpw = $cipher1->encrypt($magic) . $cipher2->encrypt($magic) . pack("H10", "0000000000");
-    return calc_resp($lm_hpw, $nonce);
+    return $cipher1->encrypt($magic) . $cipher2->encrypt($magic) . pack("H10", "0000000000");
 } 
 
-#########################################################################
-# nt_resp calculates the NT response for NTLM. It takes the nonce and 
-# the user password to compute the 24-bytes NT response.
-#########################################################################
-sub nt_resp($$)
+##########################################################################
+# nt_hash calculates the NT hash to be used to calculate the NT response #
+# It takes a password and return the 21 bytes NT password hash.          #
+##########################################################################
+sub nt_hash($)
 {
-    my ($passwd, $nonce) = @_;
+    my ($passwd) = @_;
     my $nt_pw = unicodify($passwd);
     my $nt_hpw;
     if ($Authen::Perl::NTLM::PurePerl == 1) {
@@ -166,7 +165,7 @@ sub nt_resp($$)
         $md4->add($nt_pw);
 	$nt_hpw = $md4->digest() . pack("H10", "0000000000");
     }
-    return calc_resp($nt_hpw, $nonce);
+    return $nt_hpw;
 }
 
 ####################################################################
@@ -377,8 +376,10 @@ use Authen::NTLM qw(nt_resp lm_resp negotiate_msg auth_msg);
 
 # To compute the LM Response and NT Response based on password
     $my_pass = "mypassword";
-    $lm_resp = lm_resp($my_pass, $nonce);
-    $nt_resp = nt_resp($my_pass, $nonce);
+    $lm_hpw = lm_hash($my_pass);
+    $lm_resp = calc_resp($lm_hpw, $nonce);
+    $nt_hpw = nt_hash($my_pass);
+    $nt_resp = calc_resp($nt_hpw, $nonce);
 
 # To compose a NTLM Response Packet
     $flags = Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_ALWAYS_SIGN
@@ -442,9 +443,14 @@ supposedly faster.
 
 =head1 BUGS
 
-Nothing known. The Makefile.PL in 0.02 has a "bug" that it 
-can't pass CPAN's auto test program. It has been fixed. It
-will work as expected for normal use though.
+Nothing known. For security reasons, I decided to deprecate the
+nt_resp and lm_resp functions. From now on, you have to call
+the corresponding hash functions (either nt_hash or lm_hash) and
+supply the password hash to calc_resp to get the respective
+NTLM response. It is recommended that after you obtained the
+NT and LM hashes of your password, you zero it out with s/./chr(0)/ge;
+This is to reduce the time that allows people to look at the password 
+by doing a memory dump.
 
 =head1 AUTHOR
 

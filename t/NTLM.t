@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-use Authen::Perl::NTLM qw(nt_resp lm_resp negotiate_msg auth_msg compute_nonce);
+use Authen::Perl::NTLM qw(nt_hash lm_hash calc_resp negotiate_msg auth_msg compute_nonce);
 use Test;
 
 plan tests => 5;
@@ -29,9 +29,11 @@ $correct_auth_msg = pack("H180", "4e544c4d5353500003000000" .
 	   | Authen::Perl::NTLM::NTLMSSP_REQUEST_TARGET;
     $negotiate_msg = negotiate_msg("DOM", "WS", $flags);
 ok($negotiate_msg eq $correct_negotiate_msg);
-$lm_resp = lm_resp($my_pass, $nonce);
+$lm_hpw = lm_hash($my_pass);
+$lm_resp = calc_resp($lm_hpw, $nonce);
 ok($lm_resp eq $correct_lm_resp); 
-$nt_resp = nt_resp($my_pass, $nonce);
+$nt_hpw = nt_hash($my_pass);
+$nt_resp = calc_resp($nt_hpw, $nonce);
 ok($nt_resp eq $correct_nt_resp); 
    
     $flags = Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_ALWAYS_SIGN

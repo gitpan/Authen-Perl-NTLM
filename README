@@ -17,8 +17,9 @@ SYNOPSIS
     negotiate_msg("my_domain", "my_ws", $flags);
 
     # To compute the LM Response and NT Response based on password $my_pass
-    = "mypassword"; $lm_resp = lm_resp($my_pass, $nonce); $nt_resp =
-    nt_resp($my_pass, $nonce);
+    = "mypassword"; $lm_hpw = lm_hash($my_pass); $lm_resp =
+    calc_resp($lm_hpw, $nonce); $nt_hpw = nt_hash($my_pass); $nt_resp =
+    calc_resp($nt_hpw, $nonce);
 
     # To compose a NTLM Response Packet $flags =
     Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_ALWAYS_SIGN |
@@ -79,9 +80,13 @@ TO-DO
     6) Implement the module in C.
 
 BUGS
-    Nothing known. The Makefile.PL in 0.02 has a "bug" that it can't pass
-    CPAN's auto test program. It has been fixed. It will work as expected
-    for normal use though.
+    Nothing known. For security reasons, I decided to deprecate the nt_resp
+    and lm_resp functions. From now on, you have to call the corresponding
+    hash functions (either nt_hash or lm_hash) and supply the password hash
+    to calc_resp to get the respective NTLM response. It is recommended that
+    after you obtained the NT and LM hashes of your password, you zero it
+    out with s/./chr(0)/ge; This is to reduce the time that allows people to
+    look at the password by doing a memory dump.
 
 AUTHOR
     This implementation was written by Yee Man Chan (ymc@yahoo.com).
