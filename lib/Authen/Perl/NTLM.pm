@@ -47,7 +47,7 @@ require DynaLoader;
 @ISA = qw (Exporter DynaLoader);
 @EXPORT = qw ();
 @EXPORT_OK = qw (nt_hash lm_hash calc_resp);
-$VERSION = '0.10';
+$VERSION = '0.11';
 
 # Stolen from Crypt::DES.
 sub usage {

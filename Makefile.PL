@@ -1,6 +1,5 @@
 #!/usr/bin/perl
 
-use strict;
 use ExtUtils::MakeMaker;
 eval "require Crypt::DES && require Digest::MD4";
 if ($@) {
