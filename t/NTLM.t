@@ -1,11 +1,13 @@
 #!/usr/bin/perl
 
-use Authen::Perl::NTLM qw(nt_hash lm_hash calc_resp negotiate_msg auth_msg compute_nonce);
+use Authen::Perl::NTLM qw(nt_hash lm_hash);
 use Test;
 
-plan tests => 5;
+plan tests => 4;
 $my_pass = "Beeblebrox";
 $nonce = "SrvNonce";
+$client = new_client Authen::Perl::NTLM(lm_hash($my_pass), nt_hash($my_pass), "USER", "USERDOM", "DOM", "WS");
+
 $correct_negotiate_msg = pack("H74", "4e544c4d53535000" .
 				"0100000007b200a00300030022000000" .
 				"02000200200000005753444f4d");
@@ -18,30 +20,38 @@ $correct_auth_msg = pack("H180", "4e544c4d5353500003000000" .
 			"05820000550053004500520044004f00" .
 			"4d00550053004500520057005300") . 
 			$correct_lm_resp . $correct_nt_resp;
-    $flags = Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_80000000 
-	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_128
-	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_ALWAYS_SIGN
-	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_OEM_DOMAIN_SUPPLIED
-	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_OEM_WORKSTATION_SUPPLIED
-	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_NTLM
-	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_UNICODE
-	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_OEM
-	   | Authen::Perl::NTLM::NTLMSSP_REQUEST_TARGET;
-    $negotiate_msg = negotiate_msg("DOM", "WS", $flags);
+    $flags = $client->NTLMSSP_NEGOTIATE_80000000 
+	   | $client->NTLMSSP_NEGOTIATE_128
+	   | $client->NTLMSSP_NEGOTIATE_ALWAYS_SIGN
+	   | $client->NTLMSSP_NEGOTIATE_OEM_DOMAIN_SUPPLIED
+	   | $client->NTLMSSP_NEGOTIATE_OEM_WORKSTATION_SUPPLIED
+	   | $client->NTLMSSP_NEGOTIATE_NTLM
+	   | $client->NTLMSSP_NEGOTIATE_UNICODE
+	   | $client->NTLMSSP_NEGOTIATE_OEM
+	   | $client->NTLMSSP_REQUEST_TARGET;
+$negotiate_msg = $client->negotiate_msg($flags);
 ok($negotiate_msg eq $correct_negotiate_msg);
-$lm_hpw = lm_hash($my_pass);
-$lm_resp = calc_resp($lm_hpw, $nonce);
-ok($lm_resp eq $correct_lm_resp); 
-$nt_hpw = nt_hash($my_pass);
-$nt_resp = calc_resp($nt_hpw, $nonce);
-ok($nt_resp eq $correct_nt_resp); 
    
-    $flags = Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_ALWAYS_SIGN
-	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_NTLM
-	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_UNICODE
-	   | Authen::Perl::NTLM::NTLMSSP_REQUEST_TARGET;
-    $auth_msg = auth_msg($lm_resp, $nt_resp, "USERDOM", "USER",
-		"WS", "", $flags);
+    $flags = $client->NTLMSSP_NEGOTIATE_ALWAYS_SIGN
+	   | $client->NTLMSSP_NEGOTIATE_NTLM
+	   | $client->NTLMSSP_NEGOTIATE_UNICODE
+	   | $client->NTLMSSP_REQUEST_TARGET;
+    $auth_msg = $client->auth_msg($nonce, $flags);
 ok($auth_msg eq $correct_auth_msg);
-$nonce = compute_nonce();
-ok(length($nonce) == 8);
+$server = new_server Authen::Perl::NTLM("DOM");
+$correct_challenge_msg1 = pack("H48", "4e544c4d53535000" .
+				   "0200000003000300" .
+				   "3000000005820100");
+$correct_challenge_msg2 = pack("H44", 
+				   "0000000000000000" .
+				   "000000003c000000" .
+				   "44004f004d00");
+    $flags = $server->NTLMSSP_NEGOTIATE_ALWAYS_SIGN
+	   | $server->NTLMSSP_NEGOTIATE_NTLM
+	   | $server->NTLMSSP_NEGOTIATE_UNICODE
+	   | $server->NTLMSSP_TARGET_TYPE_DOMAIN
+	   | $server->NTLMSSP_REQUEST_TARGET;
+$challenge_msg = $server->challenge_msg($flags);
+ok(substr($challenge_msg, 0, 24) eq $correct_challenge_msg1 and substr($challenge_msg, 32, 22) eq $correct_challenge_msg2);
+@result = $client->parse_challenge($challenge_msg);
+ok($result[0] eq "DOM" and $result[1] == unpack("V", pack("H8", "05820100")) and length($result[2]) == 8 and $result[3] == 0 and $result[4] == 0x3c);

@@ -1,8 +1,11 @@
 NAME
-    Authen::NTLM - Perl extension for NTLM related computations
+    Authen::Perl::NTLM - Perl extension for NTLM related computations
 
 SYNOPSIS
-    use Authen::NTLM qw(nt_resp lm_resp negotiate_msg auth_msg);
+    use Authen::Perl::NTLM qw(nt_hash lm_hash);
+
+        $my_pass = "mypassword";
+        $client = new_client Authen::Perl::NTLM(lm_hash($my_pass), nt_hash($my_pass));
 
     # To compose a NTLM Negotiate Packet $flags =
     Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_80000000 |
@@ -14,23 +17,26 @@ SYNOPSIS
     Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_UNICODE |
     Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_OEM |
     Authen::Perl::NTLM::NTLMSSP_REQUEST_TARGET; $negotiate_msg =
-    negotiate_msg("my_domain", "my_ws", $flags);
+    $client->negotiate_msg($flags);
 
-    # To compute the LM Response and NT Response based on password $my_pass
-    = "mypassword"; $lm_hpw = lm_hash($my_pass); $lm_resp =
-    calc_resp($lm_hpw, $nonce); $nt_hpw = nt_hash($my_pass); $nt_resp =
-    calc_resp($nt_hpw, $nonce);
+    # To instantiate a server to compose a NTLM challenge $server =
+    new_server Authen::Perl::NTLM; $flags =
+    Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_ALWAYS_SIGN |
+    Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_NTLM |
+    Authen::Perl::NTLM::NTLMSSP_REQUEST_INIT_RESPONSE |
+    Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_UNICODE |
+    Authen::Perl::NTLM::NTLMSSP_REQUEST_TARGET; $challenge_msg =
+    $server->challenge_msg($flags);
+
+    # client parse NTLM challenge ($domain, $flags, $nonce, $ctx_upper,
+    $ctx_lower) = $client->parse_challenge($challenge_msg);
 
     # To compose a NTLM Response Packet $flags =
     Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_ALWAYS_SIGN |
     Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_NTLM |
     Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_UNICODE |
     Authen::Perl::NTLM::NTLMSSP_REQUEST_TARGET; $auth_msg =
-    auth_msg($lm_resp, $nt_resp, "my_userdomain", "my_username" "my_ws", "",
-    $flags);
-
-    # To compute a nonce at the server side to create NTLM Challenge Packet
-    $nonce = compute_nonce();
+    $client->auth_msg($nonec, $flags);
 
 DESCRIPTION
     The NTLM (Windows NT LAN Manager) authentication scheme is the
@@ -67,26 +73,16 @@ DEPENDENCIES
     supposedly faster.
 
 TO-DO
-    1) A function to compose NTLM challenge packet for DCE RPC.
+    1) A function to parse NTLM negotiation packet for DCE RPC.
 
-    2) A function to parse NTLM negotiation packet for DCE RPC.
+    2) A function to parse NTLM response packet for DCE RPC.
 
-    3) A function to parse NTLM challenge packet for DCE RPC.
+    3) A function to compute session key for DCE RPC.
 
-    4) A function to parse NTLM response packet for DCE RPC.
-
-    5) A function to compute session key for DCE RPC.
-
-    6) Implement the module in C.
+    4) Implement the module in C.
 
 BUGS
-    Nothing known. For security reasons, I decided to deprecate the nt_resp
-    and lm_resp functions. From now on, you have to call the corresponding
-    hash functions (either nt_hash or lm_hash) and supply the password hash
-    to calc_resp to get the respective NTLM response. It is recommended that
-    after you obtained the NT and LM hashes of your password, you zero it
-    out with s/./chr(0)/ge; This is to reduce the time that allows people to
-    look at the password by doing a memory dump.
+    Nothing known.
 
 AUTHOR
     This implementation was written by Yee Man Chan (ymc@yahoo.com).

@@ -7,10 +7,8 @@
 package Authen::Perl::NTLM;
 
 use strict;
+use POSIX;
 use Carp;
-$Authen::Perl::NTLM::cChallenge = 0; # a counter to stir the seed that
-                                     # generates the random number for the
-                                     # nonce
 $Authen::Perl::NTLM::PurePerl = undef; # a flag to see if we load pure perl 
                                        # DES and MD4 modules
 eval "require Crypt::DES && require Digest::MD4";
@@ -48,8 +46,8 @@ require DynaLoader;
 
 @ISA = qw (Exporter DynaLoader);
 @EXPORT = qw ();
-@EXPORT_OK = qw (nt_hash lm_hash calc_resp negotiate_msg auth_msg compute_nonce);
-$VERSION = '0.04';
+@EXPORT_OK = qw (nt_hash lm_hash calc_resp);
+$VERSION = '0.10';
 
 # Stolen from Crypt::DES.
 sub usage {
@@ -116,10 +114,54 @@ use constant NTLMSSP_NEGOTIATE_80000000                 => 0x80000000;
 
 sub lm_hash($);
 sub nt_hash($);
-sub negotiate_msg($$$);
-sub auth_msg($$$$$$$);
-sub compute_nonce();
 sub calc_resp($$);
+
+#########################################################################
+# Constructor to initialize authentication related information. In this #
+# version, we assume NTLM as the authentication scheme of choice.       #
+# The constructor takes the class name, LM hash of the client password  #
+# and the LM hash of the client password as arguments.                  #
+#########################################################################
+sub new_client {
+    usage("new_client Authen::Perl::NTLM(\$lm_hpw, \$nt_hpw\) or\nnew_client Authen::Perl::NTLM\(\$lm_hpw, \$nt_hpw, \$user, \$user_domain, \$domain, \$machine\)") unless @_ == 3 or @_ == 7;
+    my ($package, $lm_hpw, $nt_hpw, $user, $user_domain, $domain, $machine) = @_;
+    srand time;
+    if (not defined($user)) {$user = $ENV{'USERNAME'};}
+    if (not defined($user_domain)) {$user_domain = $ENV{'USERDOMAIN'};}
+    if (not defined($domain)) {$domain = Win32::DomainName();}
+    if (not defined($machine)) {$machine = $ENV{'COMPUTERNAME'};}
+    usage("LM hash must be 21-bytes long") unless length($lm_hpw) == 21;
+    usage("NT hash must be 21-bytes long") unless length($nt_hpw) == 21;
+    defined($user) or usage "Undefined User Name!\n";
+    defined($user_domain) or usage "Undefined User Domain!\n";
+    defined($domain) or usage "Undefined Network Domain!\n";
+    defined($machine) or usage "Undefined Computer Name!\n";
+    my $ctx_id = pack("V", rand 2**32);
+    bless {
+	'user' => $user,
+	'user_domain' => $user_domain,
+	'domain' => $domain,
+	'machine' => $machine,
+	'lm_hpw' => $lm_hpw,
+	'nt_hpw' => $nt_hpw
+          }, $package;
+}
+
+###########################################################################
+# new_server instantiate a NTLM server that composes an NTLM challenge    #
+# It can take one argument for the server network domain. If the argument #
+# is not supplied, it will call Win32::DomainName to obtain it.           #
+###########################################################################
+sub new_server {
+    usage("new_server Authen::Perl::NTLM or\nnew_server Authen::Perl::NTLM(\$domain\)") unless @_ == 1 or @_ == 2;
+    my ($package, $domain) = @_;
+    if (not defined($domain)) {$domain = Win32::DomainName();}
+    defined($domain) or usage "Undefined Network Domain!\n";
+    bless {
+        'domain' => $domain,
+	'cChallenge' => 0 # a counter to stir the seed to generate random
+          }, $package;    # number for the nonce
+}
 
 ##########################################################################
 # lm_hash calculates the LM hash to be used to calculate the LM response #
@@ -174,10 +216,12 @@ sub nt_hash($)
 # $ENV{'COMPUTERNAME'} or Win32::NodeName()) and the negotiation   #
 # flags.							   #
 ####################################################################
-sub negotiate_msg($$$)
+sub negotiate_msg($$)
 {
-    my ($domain, $machine) = @_;
-    my $flags = pack("V", $_[2]);
+    my $self = $_[0];
+    my $flags = pack("V", $_[1]);
+    my $domain = $self->{'domain'};
+    my $machine = $self->{'machine'};
     my $msg = NTLMSSP_SIGNATURE . chr(0);
     $msg .= pack("V", NTLMSSP_NEGOTIATE);
     $msg .= $flags;
@@ -188,49 +232,133 @@ sub negotiate_msg($$$)
     return $msg;
 }
 
+####################################################################
+# challenge_msg composes the NTLM challenge message. It takes NTLM #
+# Negotiation Flags as an argument.                                # 
+####################################################################
+sub challenge_msg($)
+{
+    my ($self) = @_;
+    my $flags = pack("V", $_[1]);
+    my $domain = $self->{'domain'};
+    my $msg = NTLMSSP_SIGNATURE . chr(0);
+    $self->{'cChallenge'} += 0x100;
+    $msg .= pack("V", NTLMSSP_CHALLENGE);
+    $msg .= pack("v", length($domain)) . pack("v", length($domain)) . pack("V", 48);
+    $msg .= $flags;
+    $msg .= compute_nonce($self->{'cChallenge'});
+    $msg .= pack("VV", 0, 0); # 8 bytes of reserved 0s
+    $msg .= pack("V", 0); # ServerContextHandleLower
+    $msg .= pack("V", 0x3c); # ServerContextHandleUpper
+    $msg .= unicodify($domain);
+    return $msg;
+}
+
+###########################################################################
+# parse_challenge parses the NTLM challenge and return a list of server   #
+# network domain, NTLM Negotiation Flags, Nonce, ServerContextHandleUpper #
+# and ServerContextHandleLower.                                           #
+########################################################################### 
+sub parse_challenge
+{
+    my ($self, $pkt) = @_;
+    substr($pkt, 0, 8) eq (NTLMSSP_SIGNATURE . chr(0)) or usage "NTLM Challenge doesn't contain NTLMSSP_SIGNATURE!\n";
+    my $type = GetInt32(substr($pkt, 8));
+    $type == NTLMSSP_CHALLENGE or usage "Not an NTLM Challenge!\n";
+    my $target = GetString($pkt, 12);
+    $target = un_unicodify($target);
+    my $flags = GetInt32(substr($pkt, 20));
+    my $nonce = substr($pkt, 24, 8);
+    my $ctx_lower = GetInt32(substr($pkt, 40));
+    my $ctx_upper = GetInt32(substr($pkt, 44));
+    return ($target, $flags, $nonce, $ctx_lower, $ctx_upper);
+}
+
+############################################################################
+# GetString is called internally to get a UNICODE string in a NTLM message #
+############################################################################
+sub GetString
+{
+    my ($str, $loc) = @_;
+    my $len = GetInt16(substr($str, $loc));
+    my $max_len = GetInt16(substr($str, $loc+2));
+    my $offset = GetInt32(substr($str, $loc+4));
+    return substr($str, $offset, 2*$max_len);
+}
+
+############################################################################
+# GetInt32 is called internally to get a 32-bit integer in an NTLM message #
+############################################################################
+sub GetInt32
+{
+    my ($str) = @_;
+    return unpack("V", substr($str, 0, 4));
+}
+
+############################################################################
+# GetInt16 is called internally to get a 16-bit integer in an NTLM message #
+############################################################################
+sub GetInt16
+{
+    my ($str) = @_;
+    return unpack("v", substr($str, 0, 2));
+}
+
 ###########################################################################
 # auth_msg creates the NTLM response to an NTLM challenge from the        #
-# server. It takes 7 arguments: lm_resp (from a call to lm_resp),         #
-# nt_resp (from a call to nt_resp), user domain (from $ENV{'USERDOMAIN'}),#
-# user name (from $ENV{'USERNAME'} or getlogin() or Win32::LoginName()),  #
-# workstation name (from Win32::NodeName() or $ENV{'COMPUTERNAME'}),      #
-# session key and negotiation flags.                                      #
+# server. It takes 2 arguments: $nonce obtained from parse_challenge and  #
+# NTLM Negotiation Flags.                                                 #
 # This function ASSUMEs the input of user domain, user name and           # 
 # workstation name are in ASCII format and not in UNICODE format.         #
 ###########################################################################
-sub auth_msg($$$$$$$)
+sub auth_msg($$$)
 {
-    my ($lm_resp, $nt_resp, $domain, $username, $machine, $session_key) = @_;
-    my $flags = pack("V", $_[6]);
+    my ($self, $nonce) = @_;
+    my $session_key = session_key();
+    my $user_domain = $self->{'user_domain'};
+    my $username = $self->{'user'};
+    my $machine = $self->{'machine'};
+    my $lm_resp = calc_resp($self->{'lm_hpw'}, $nonce);
+    my $nt_resp = calc_resp($self->{'nt_hpw'}, $nonce);
+    my $flags = pack("V", $_[2]);
     my $msg = NTLMSSP_SIGNATURE . chr(0);
     $msg .= pack("V", NTLMSSP_AUTH);
     my $offset = length($msg) + 8*6 + 4;
-    $msg .= pack("v", length($lm_resp)) . pack("v", length($lm_resp)) . pack("V", $offset + 2*length($domain) + 2*length($username) + 2*length($machine) + length($session_key)); 
-    $msg .= pack("v", length($nt_resp)) . pack("v", length($nt_resp)) . pack("V", $offset + 2*length($domain) + 2*length($username) + 2*length($machine) + length($session_key) + length($lm_resp)); 
-    $msg .= pack("v", 2*length($domain)) . pack("v", 2*length($domain)) . pack("V", $offset); 
-    $msg .= pack("v", 2*length($username)) . pack("v", 2*length($username)) . pack("V", $offset + 2*length($domain)); 
-    $msg .= pack("v", 2*length($machine)) . pack("v", 2*length($machine)) . pack("V", $offset + 2*length($domain) + 2*length($username)); 
-    $msg .= pack("v", length($session_key)) . pack("v", length($session_key)) . pack("V", $offset + 2*length($domain) + 2*length($username) + 2*length($machine)+ 48); 
-    $msg .= $flags . unicodify($domain) . unicodify($username) . unicodify($machine) . $lm_resp . $nt_resp . $session_key;
+    $msg .= pack("v", length($lm_resp)) . pack("v", length($lm_resp)) . pack("V", $offset + 2*length($user_domain) + 2*length($username) + 2*length($machine) + length($session_key)); 
+    $msg .= pack("v", length($nt_resp)) . pack("v", length($nt_resp)) . pack("V", $offset + 2*length($user_domain) + 2*length($username) + 2*length($machine) + length($session_key) + length($lm_resp)); 
+    $msg .= pack("v", 2*length($user_domain)) . pack("v", 2*length($user_domain)) . pack("V", $offset); 
+    $msg .= pack("v", 2*length($username)) . pack("v", 2*length($username)) . pack("V", $offset + 2*length($user_domain)); 
+    $msg .= pack("v", 2*length($machine)) . pack("v", 2*length($machine)) . pack("V", $offset + 2*length($user_domain) + 2*length($username)); 
+    $msg .= pack("v", length($session_key)) . pack("v", length($session_key)) . pack("V", $offset + 2*length($user_domain) + 2*length($username) + 2*length($machine)+ 48); 
+    $msg .= $flags . unicodify($user_domain) . unicodify($username) . unicodify($machine) . $lm_resp . $nt_resp . $session_key;
     return $msg;
+}
+
+#####################################################################
+# session_key computes a session key for an NTLM session. Currently #
+# it is not implemented.                                            #
+#####################################################################
+sub session_key
+{
+    return "";
 }
 
 #######################################################################
 # compute_nonce computes the 8-bytes nonce to be included in server's
 # NTLM challenge packet.
 #######################################################################
-sub compute_nonce()
+sub compute_nonce($)
 {
-   my @SysTime = UNIXTimeToFILETIME(gmtime());
+   my ($cChallenge) = @_;
+   my @SysTime = UNIXTimeToFILETIME($cChallenge, time);
    my $Seed = (($SysTime[1] + 1) <<  0) |
               (($SysTime[2] + 0) <<  8) |
               (($SysTime[3] - 1) << 16) |
               (($SysTime[4] + 0) << 24);
    srand $Seed;
-   $Authen::Perl::NTLM::cChallenge += 0x100;
-   my $ulChallenge0 = (2**32)*rand; 
-   my $ulChallenge1 = (2**32)*rand; 
-   my $ulNegate = (2**32)*rand;
+   my $ulChallenge0 = rand(2**16)+rand(2**32); 
+   my $ulChallenge1 = rand(2**16)+rand(2**32); 
+   my $ulNegate = rand(2**16)+rand(2**32);
    if ($ulNegate & 0x1) {$ulChallenge0 |= 0x80000000;} 
    if ($ulNegate & 0x2) {$ulChallenge1 |= 0x80000000;} 
    return pack("V", $ulChallenge0) . pack("V", $ulChallenge1);
@@ -313,6 +441,25 @@ sub calc_resp($$)
 }
 
 #########################################################################
+# un_unicodify takes a unicode string and turns it into an ASCII string.
+# CAUTION: This function is intended to be used with unicodified ASCII
+# strings.
+#########################################################################
+sub un_unicodify
+{
+   my ($str) = @_;
+   my $newstr = "";
+   my $i;
+
+   usage("$str must be a string of even length to be un_unicodify!: $!\n") if length($str) % 2;
+
+   for ($i = 0; $i < length($str) / 2; ++$i) {
+	$newstr .= substr($str, 2*$i, 1);
+   }
+   return $newstr;
+}
+
+#########################################################################
 # unicodify takes an ASCII string and turns it into a unicode string.
 #########################################################################
 sub unicodify($)
@@ -334,12 +481,12 @@ sub unicodify($)
 # adjusted by cChallenge as in NTLM spec. For those of you who want to
 # use this function for actual use, please remove the cChallenge variable.
 ########################################################################## 
-sub UNIXTimeToFILETIME
+sub UNIXTimeToFILETIME($$)
 {
-    my ($time) = @_;
-    $time = $time * 10000000 + 11644473600000000 + $Authen::Perl::NTLM::cChallenge;
-    my $uppertime = $time >> 32;
-    my $lowertime = $time & 0xffffffff;
+    my ($cChallenge, $time) = @_;
+    $time = $time * 10000000 + 11644473600000000 + $cChallenge;
+    my $uppertime = $time / (2**32);
+    my $lowertime = $time - floor($uppertime) * 2**32;
     return ($lowertime & 0x000000ff, 
 	    $lowertime & 0x0000ff00,
 	    $lowertime & 0x00ff0000,
@@ -356,11 +503,14 @@ __END__
 
 =head1 NAME
 
-Authen::NTLM - Perl extension for NTLM related computations
+Authen::Perl::NTLM - Perl extension for NTLM related computations
 
 =head1 SYNOPSIS
 
-use Authen::NTLM qw(nt_resp lm_resp negotiate_msg auth_msg);
+use Authen::Perl::NTLM qw(nt_hash lm_hash);
+
+    $my_pass = "mypassword";
+    $client = new_client Authen::Perl::NTLM(lm_hash($my_pass), nt_hash($my_pass));
 
 # To compose a NTLM Negotiate Packet
     $flags = Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_80000000 
@@ -372,25 +522,27 @@ use Authen::NTLM qw(nt_resp lm_resp negotiate_msg auth_msg);
 	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_UNICODE
 	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_OEM
 	   | Authen::Perl::NTLM::NTLMSSP_REQUEST_TARGET;
-    $negotiate_msg = negotiate_msg("my_domain", "my_ws", $flags);
+    $negotiate_msg = $client->negotiate_msg($flags);
 
-# To compute the LM Response and NT Response based on password
-    $my_pass = "mypassword";
-    $lm_hpw = lm_hash($my_pass);
-    $lm_resp = calc_resp($lm_hpw, $nonce);
-    $nt_hpw = nt_hash($my_pass);
-    $nt_resp = calc_resp($nt_hpw, $nonce);
+# To instantiate a server to compose a NTLM challenge
+    $server = new_server Authen::Perl::NTLM;
+    $flags = Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_ALWAYS_SIGN
+	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_NTLM
+	   | Authen::Perl::NTLM::NTLMSSP_REQUEST_INIT_RESPONSE
+	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_UNICODE
+	   | Authen::Perl::NTLM::NTLMSSP_REQUEST_TARGET;
+    $challenge_msg = $server->challenge_msg($flags);
+
+# client parse NTLM challenge
+    ($domain, $flags, $nonce, $ctx_upper, $ctx_lower) = 
+	$client->parse_challenge($challenge_msg);
 
 # To compose a NTLM Response Packet
     $flags = Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_ALWAYS_SIGN
 	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_NTLM
 	   | Authen::Perl::NTLM::NTLMSSP_NEGOTIATE_UNICODE
 	   | Authen::Perl::NTLM::NTLMSSP_REQUEST_TARGET;
-    $auth_msg = auth_msg($lm_resp, $nt_resp, "my_userdomain", "my_username"
-		"my_ws", "", $flags);
-
-# To compute a nonce at the server side to create NTLM Challenge Packet
-    $nonce = compute_nonce();
+    $auth_msg = $client->auth_msg($nonec, $flags);
 
 =head1 DESCRIPTION
 
@@ -429,28 +581,17 @@ supposedly faster.
 
 =head1 TO-DO
 
-1) A function to compose NTLM challenge packet for DCE RPC.
+1) A function to parse NTLM negotiation packet for DCE RPC. 
 
-2) A function to parse NTLM negotiation packet for DCE RPC. 
+2) A function to parse NTLM response packet for DCE RPC. 
 
-3) A function to parse NTLM challenge packet for DCE RPC. 
+3) A function to compute session key for DCE RPC.
 
-4) A function to parse NTLM response packet for DCE RPC. 
-
-5) A function to compute session key for DCE RPC.
-
-6) Implement the module in C.
+4) Implement the module in C.
 
 =head1 BUGS
 
-Nothing known. For security reasons, I decided to deprecate the
-nt_resp and lm_resp functions. From now on, you have to call
-the corresponding hash functions (either nt_hash or lm_hash) and
-supply the password hash to calc_resp to get the respective
-NTLM response. It is recommended that after you obtained the
-NT and LM hashes of your password, you zero it out with s/./chr(0)/ge;
-This is to reduce the time that allows people to look at the password 
-by doing a memory dump.
+Nothing known. 
 
 =head1 AUTHOR
 
